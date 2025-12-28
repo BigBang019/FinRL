@@ -1,33 +1,42 @@
 from __future__ import annotations
 
 import numpy as np
+import gymnasium as gym
+import pandas as pd
+from gymnasium import spaces
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 
-class BitcoinEnv:  # custom env
+_INDICATORS = [
+    'macd',          # MACD (默认 12, 26)
+    'boll_ub',       # 布林带上轨 (默认 20)
+    'boll_lb',       # 布林带下轨 (默认 20)
+    'rsi_30',        # 30周期 RSI
+    'dx_30',         # 30周期 DX (动向指标)
+    'close_30_sma',  # 30周期收盘价简单移动平均
+    'close_60_sma'   # 60周期收盘价简单移动平均
+]
+
+class BitcoinEnv(gym.Env):  # custom env
     def __init__(
         self,
         data_cwd=None,
-        price_ary=None,
-        tech_ary=None,
-        time_frequency=15,
-        start=None,
-        mid1=172197,
-        mid2=216837,
-        end=None,
+        time_frequency=1,
         initial_account=1e6,
-        max_stock=1e2,
         transaction_fee_percent=1e-3,
         mode="train",
         gamma=0.99,
     ):
-        self.stock_dim = 1
         self.initial_account = initial_account
         self.transaction_fee_percent = transaction_fee_percent
-        self.max_stock = 1
         self.gamma = gamma
         self.mode = mode
+        self.action_space = spaces.Box(low=-1, high=1, shape=(1, ))
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(len(_INDICATORS)+3, )
+        )
         self.load_data(
-            data_cwd, price_ary, tech_ary, time_frequency, start, mid1, mid2, end
+            data_cwd, time_frequency
         )
 
         # reset
@@ -81,23 +90,30 @@ class BitcoinEnv:  # custom env
                 self.stocks * 2**-4,
             )
         ).astype(np.float32)
-        return state
+        return state, {
+            "env_total_asset": self.total_asset,
+            "env_account": self.account,
+            "env_day_price": self.day_price,
+            "env_portfolio": self.stocks,
+            "env_forward_return": 0,
+        }
 
-    def step(self, action) -> (np.ndarray, float, bool, None):
+    def step(self, action):
+        prev_total_asset = self.total_asset
         stock_action = action[0]
         """buy or sell stock"""
         adj = self.day_price[0]
-        if stock_action < 0:
-            stock_action = max(
-                0, min(-1 * stock_action, 0.5 * self.total_asset / adj + self.stocks)
-            )
-            self.account += adj * stock_action * (1 - self.transaction_fee_percent)
-            self.stocks -= stock_action
-        elif stock_action > 0:
-            max_amount = self.account / adj
-            stock_action = min(stock_action, max_amount)
-            self.account -= adj * stock_action * (1 + self.transaction_fee_percent)
-            self.stocks += stock_action
+        if stock_action > 0:
+            max_buy_units = self.account / (adj * (1.0 + self.transaction_fee_percent) + 1e-12)
+            buy_units = stock_action * max_buy_units
+            cost = buy_units * adj * (1.0 + self.transaction_fee_percent)
+            self.account -= cost
+            self.stocks += buy_units
+        else:
+            sell_units = (-stock_action) * self.stocks
+            revenue = sell_units * adj * (1.0 - self.transaction_fee_percent)
+            self.account += revenue
+            self.stocks -= sell_units
 
         """update day"""
         self.day += 1
@@ -123,15 +139,16 @@ class BitcoinEnv:  # custom env
         ).astype(np.float32)
 
         next_total_asset = self.account + self.day_price[0] * self.stocks
-        reward = (next_total_asset - self.total_asset) * 2**-16
+        reward = (next_total_asset / self.total_asset - 1) * 100
         self.total_asset = next_total_asset
 
-        self.gamma_return = self.gamma_return * self.gamma + reward
-        if done:
-            reward += self.gamma_return
-            self.gamma_return = 0.0
-            self.episode_return = next_total_asset / self.initial_account
-        return state, reward, done, None
+        return state, reward, done, False, {
+            "env_total_asset": self.total_asset,
+            "env_account": self.account,
+            "env_day_price": self.day_price,
+            "env_portfolio": self.stocks,
+            "env_forward_return": (next_total_asset / prev_total_asset - 1) * 100,
+        }
 
     def draw_cumulative_return(self, args, _torch) -> list:
         state_dim = self.state_dim
@@ -179,42 +196,116 @@ class BitcoinEnv:  # custom env
         return episode_returns, btc_returns
 
     def load_data(
-        self, data_cwd, price_ary, tech_ary, time_frequency, start, mid1, mid2, end
+        self, data_cwd, time_frequency,
     ):
-        if data_cwd is not None:
-            try:
-                price_ary = np.load(f"{data_cwd}/price_ary.npy")
-                tech_ary = np.load(f"{data_cwd}/tech_ary.npy")
-            except BaseException:
-                raise ValueError("Data files not found!")
-        else:
-            price_ary = price_ary
-            tech_ary = tech_ary
-
-        n = price_ary.shape[0]
         if self.mode == "train":
-            self.price_ary = price_ary[start:mid1]
-            self.tech_ary = tech_ary[start:mid1]
-            n = self.price_ary.shape[0]
-            x = n // int(time_frequency)
-            ind = [int(time_frequency) * i for i in range(x)]
-            self.price_ary = self.price_ary[ind]
-            self.tech_ary = self.tech_ary[ind]
-        elif self.mode == "test":
-            self.price_ary = price_ary[mid1:mid2]
-            self.tech_ary = tech_ary[mid1:mid2]
-            n = self.price_ary.shape[0]
-            x = n // int(time_frequency)
-            ind = [int(time_frequency) * i for i in range(x)]
-            self.price_ary = self.price_ary[ind]
-            self.tech_ary = self.tech_ary[ind]
-        elif self.mode == "trade":
-            self.price_ary = price_ary[mid2:end]
-            self.tech_ary = tech_ary[mid2:end]
+            df = pd.read_csv(f"{data_cwd}/train.csv", header=[0,1], index_col=0)
+            self.price_ary = df[('BTC/USDT', 'close')].to_numpy().reshape(-1, 1)
+            self.tech_ary = df[list(map(lambda x:('BTC/USDT', x), _INDICATORS))].to_numpy()
             n = self.price_ary.shape[0]
             x = n // int(time_frequency)
             ind = [int(time_frequency) * i for i in range(x)]
             self.price_ary = self.price_ary[ind]
             self.tech_ary = self.tech_ary[ind]
         else:
-            raise ValueError("Invalid Mode!")
+            df = pd.read_csv(f"{data_cwd}/eval.csv", header=[0,1], index_col=0)
+            self.price_ary = df[('BTC/USDT', 'close')].to_numpy().reshape(-1, 1)
+            self.tech_ary = df[list(map(lambda x:('BTC/USDT', x), _INDICATORS))].to_numpy()
+            n = self.price_ary.shape[0]
+            x = n // int(time_frequency)
+            ind = [int(time_frequency) * i for i in range(x)]
+            self.price_ary = self.price_ary[ind]
+            self.tech_ary = self.tech_ary[ind]
+
+    def get_sb_env(self):
+        e = DummyVecEnv([lambda: self])
+        obs = e.reset()
+        return e, obs
+
+
+
+class BitcoinEnvDSR(BitcoinEnv):
+    """
+    用 Differential Sharpe Ratio (DSR) 做逐步reward，近似最大化Sharpe。
+    """
+
+    def __init__(
+        self,
+        *args,
+        rf_per_step: float = 0.0,      # 每步无风险对数收益（可先设0）
+        dsr_eta: float = 0.05,         # EMA步长；约等于 1/window
+        dsr_eps: float = 1e-6,         # 数值稳定
+        dsr_reward_scale: float = 1.0, # DSR reward缩放，便于PPO稳定训练
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+
+        self.rf_per_step = float(rf_per_step)
+        self.dsr_eta = float(dsr_eta)
+        self.dsr_eps = float(dsr_eps)
+        self.dsr_reward_scale = float(dsr_reward_scale)
+
+        # DSR内部状态：A=E[x], B=E[x^2] 的EMA估计
+        self._A = 0.0
+        self._B = 0.0
+
+        # 如果要把DSR统计量拼进state，需要扩展observation_space
+        base_dim = self.observation_space.shape[0]
+        # 这里拼两个量：ema_mean(%), ema_std(%)
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(base_dim + 2,), dtype=np.float32
+        )
+
+    def _augment_state(self, state: np.ndarray) -> np.ndarray:
+        var = max(self._B - self._A * self._A, self.dsr_eps)
+        std = np.sqrt(var)
+
+        # 为了量级接近你原 reward*100 的风格，这里乘100变成“百分比量级”
+        extra = np.array([self._A, std], dtype=np.float32)
+        return np.concatenate([state.astype(np.float32), extra], axis=0)
+
+    def reset(self, *, seed=None, options=None):
+        state, info = super().reset(seed=seed, options=options)
+
+        # reset DSR moments
+        self._A = 0.0
+        self._B = 0.0
+
+        state = self._augment_state(state)
+        return state, info
+
+    def step(self, action):
+        prev_total_asset = float(self.total_asset)
+        A_prev, B_prev = float(self._A), float(self._B)
+
+        # 先让父类完成交易、推进时间、更新 total_asset，并给出原始reward
+        state, raw_reward, terminated, truncated, info = super().step(action)
+
+        # （prev_total_asset应>0；加eps避免log(0)）
+        # ratio = max(float(self.total_asset) / max(prev_total_asset, 1e-12), 1e-12)
+        # x_t = np.log(ratio) - self.rf_per_step
+        x_t = (self.total_asset / prev_total_asset - 1) * 100
+
+        # DSR 增量
+        eta = self.dsr_eta
+        dA = eta * (x_t - A_prev)
+        dB = eta * (x_t * x_t - B_prev)
+
+        var_prev = max(B_prev - A_prev * A_prev, self.dsr_eps)
+        denom = (var_prev ** 1.5)
+
+        dsr_reward = 0.0
+        if denom > 0:
+            dsr_reward = (B_prev * dA - 0.5 * A_prev * dB) / denom
+
+        # 更新 moments
+        self._A = A_prev + dA
+        self._B = B_prev + dB
+
+        # 构造最终 reward
+        reward = float(self.dsr_reward_scale * dsr_reward)
+
+        # 更新 next state（把DSR统计量拼进去）
+        state = self._augment_state(state)
+
+        return state, reward, terminated, truncated, info

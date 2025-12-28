@@ -61,8 +61,8 @@ class CCXTEngineer:
         )
         first_time = True
         for pair in pair_list:
-            start_dt = datetime.strptime(start, "%Y%m%d %H:%M:%S")
-            end_dt = datetime.strptime(end, "%Y%m%d %H:%M:%S")
+            start_dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+            end_dt = datetime.strptime(end, "%Y-%m-%d %H:%M:%S")
             start_timestamp = calendar.timegm(start_dt.utctimetuple())
             end_timestamp = calendar.timegm(end_dt.utctimetuple())
             if period == "1m":
