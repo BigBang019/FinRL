@@ -37,7 +37,8 @@ class TradeCallback(EvalCallback):
 
             collected_total_asset = []
             collected_portfolio = []
-            collected_forward_return = []
+            collected_strategy_return = []
+            collected_day_price = []
             
             while True:
                 action, state = self.model.predict(current_obs, deterministic=True)
@@ -54,7 +55,8 @@ class TradeCallback(EvalCallback):
                 info = infos[0]
                 collected_total_asset.append(info['env_total_asset'])
                 collected_portfolio.append(info['env_portfolio'])
-                collected_forward_return.append(info['env_forward_return'])
+                collected_strategy_return.append(info['env_strategy_return'])
+                collected_day_price.append(info['env_day_price'])
 
                 current_obs = next_obs
                 if dones.any(): # 假设只有一个env
@@ -72,16 +74,19 @@ class TradeCallback(EvalCallback):
             
             total_asset_array = np.array(collected_total_asset) # (n, )
             portfolio_array = np.array(collected_portfolio) # (n, )
-            forward_return_array = np.array(collected_forward_return) # (n, )
+            strategy_return_array = np.array(collected_strategy_return) # (n, )
+            day_price_array = np.array(collected_day_price) # (n, )
 
             self.current_epoch_info['total_asset_array'] = total_asset_array
             self.current_epoch_info['portfolio_array'] = portfolio_array
-            self.current_epoch_info['forward_return_array'] = forward_return_array
+            self.current_epoch_info['strategy_return_array'] = strategy_return_array
+            self.current_epoch_info['day_price_array'] = day_price_array
+            self.current_epoch_info['action_array'] = actions_tensor.detach().cpu().numpy()
             
             total_return = (total_asset_array[-1] / total_asset_array[0] - 1) * 100
             self.metrics['total_return'].append(total_return)
             
-            sharpe_ratio = np.mean(forward_return_array) / np.std(forward_return_array)
+            sharpe_ratio = np.mean(strategy_return_array) / np.std(strategy_return_array)
             self.metrics['sharpe_ratio'].append(sharpe_ratio)
             
             self.logger.record(f"{self.name}/entropy_loss", entropy_loss.item())
@@ -183,8 +188,8 @@ class TradeCallback(EvalCallback):
         
         # 1.6 最新评估的收益率分布
         ax6 = plt.subplot(2, 3, 6)
-        if self.current_epoch_info and 'forward_return_array' in self.current_epoch_info:
-            returns = self.current_epoch_info['forward_return_array']
+        if self.current_epoch_info and 'strategy_return_array' in self.current_epoch_info:
+            returns = self.current_epoch_info['strategy_return_array']
             plt.hist(returns, bins=30, alpha=0.7, color='purple', edgecolor='black')
             plt.xlabel('Return (%)')
             plt.ylabel('Frequency')
@@ -205,103 +210,193 @@ class TradeCallback(EvalCallback):
         
         plt.close()
     
-    def plot_current_epoch(self, save_path=None, figsize=(12, 8)):
+    def plot_current_epoch(self, save_path=None, figsize=(14, 10)):
         """
-        专门绘制当前epoch的详细信息
-        
-        Args:
-            save_path: 保存图片的路径，如果为None则不保存
-            figsize: 图片大小，默认(12, 8)
+        绘制当前epoch的详细信息（含 action 曲线 + 持仓占总资产百分比）
+
+        数据含义（按你描述）：
+        - total_asset_array: 每步总资产（含现金+持仓市值）
+        - portfolio_array: 每步持仓股数
+        - day_price_array: 每步股票单价
+        - strategy_return_array: 每步策略收益（百分比）
+        - action_array: [-1, 1] 表示卖出/买入百分比（标量动作）
         """
         if not self.current_epoch_info:
             print("Warning: No current epoch info to plot")
             return
-        
-        fig, axes = plt.subplots(2, 2, figsize=figsize)
-        
-        # 1. 总资产曲线
-        if 'total_asset_array' in self.current_epoch_info:
-            ax1 = axes[0, 0]
-            total_asset = self.current_epoch_info['total_asset_array']
-            time_steps = np.arange(len(total_asset))
-            ax1.plot(time_steps, total_asset, 'b-', linewidth=2, label='Total Asset')
-            ax1.set_xlabel('Time Step')
-            ax1.set_ylabel('Total Asset')
-            ax1.set_title(f'{self.name} - Total Asset Over Time')
-            ax1.grid(True, alpha=0.3)
-            ax1.legend()
-            
-            # 添加初始值和最终值标注
-            initial_value = total_asset[0]
-            final_value = total_asset[-1]
-            return_pct = (final_value / initial_value - 1) * 100
-            ax1.text(0.05, 0.95, f'Initial: {initial_value:.2f}\nFinal: {final_value:.2f}\nReturn: {return_pct:.2f}%',
-                    transform=ax1.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        
-        # 2. 持仓变化
-        if 'portfolio_array' in self.current_epoch_info:
-            ax2 = axes[0, 1]
-            portfolio = self.current_epoch_info['portfolio_array']
-            time_steps = np.arange(len(portfolio))
-            ax2.plot(time_steps, portfolio, 'g-', linewidth=2, label='Portfolio Holdings')
-            ax2.set_xlabel('Time Step')
-            ax2.set_ylabel('Holdings')
-            ax2.set_title(f'{self.name} - Portfolio Holdings')
-            ax2.grid(True, alpha=0.3)
-            ax2.legend()
-        
-        # 3. 收益率时间序列
-        if 'forward_return_array' in self.current_epoch_info:
-            ax3 = axes[1, 0]
-            returns = self.current_epoch_info['forward_return_array']
-            time_steps = np.arange(len(returns))
-            ax3.plot(time_steps, returns, 'r-', linewidth=1.5, alpha=0.7, label='Return (%)')
-            ax3.axhline(0, color='k', linestyle='--', linewidth=1)
-            ax3.set_xlabel('Time Step')
-            ax3.set_ylabel('Return (%)')
-            ax3.set_title(f'{self.name} - Return Time Series')
-            ax3.grid(True, alpha=0.3)
-            ax3.legend()
-            
-            # 添加统计信息
-            mean_return = np.mean(returns)
-            std_return = np.std(returns)
-            sharpe = (mean_return / std_return) * np.sqrt(252) if std_return > 1e-8 else 0
-            ax3.text(0.05, 0.95, f'Mean: {mean_return:.4f}%\nStd: {std_return:.4f}%\nSharpe: {sharpe:.2f}',
-                    transform=ax3.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
-        
-        # 4. 回撤曲线
-        if 'total_asset_array' in self.current_epoch_info:
-            ax4 = axes[1, 1]
-            total_asset = self.current_epoch_info['total_asset_array']
-            peak = np.maximum.accumulate(total_asset)
-            drawdown = (peak - total_asset) / peak * 100
-            time_steps = np.arange(len(drawdown))
-            ax4.fill_between(time_steps, drawdown, 0, alpha=0.3, color='red', label='Drawdown')
-            ax4.plot(time_steps, drawdown, 'r-', linewidth=1.5)
-            ax4.set_xlabel('Time Step')
-            ax4.set_ylabel('Drawdown (%)')
-            ax4.set_title(f'{self.name} - Drawdown Curve')
-            ax4.grid(True, alpha=0.3)
-            ax4.legend()
-            
-            # 添加最大回撤标注
-            max_dd = np.max(drawdown)
-            max_dd_idx = np.argmax(drawdown)
-            ax4.text(0.05, 0.95, f'Max Drawdown: {max_dd:.2f}%',
-                    transform=ax4.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.5))
-            ax4.plot(max_dd_idx, max_dd, 'ro', markersize=10)
-        
+
+        # ---------- 取数据并对齐长度 ----------
+        total_asset = np.asarray(self.current_epoch_info.get("total_asset_array", []), dtype=float)
+        shares = np.asarray(self.current_epoch_info.get("portfolio_array", []), dtype=float)
+        price = np.asarray(self.current_epoch_info.get("day_price_array", []), dtype=float)
+        returns = np.asarray(self.current_epoch_info.get("strategy_return_array", []), dtype=float)
+        actions = np.asarray(self.current_epoch_info.get("action_array", []), dtype=float)
+
+        if total_asset.size == 0:
+            print("Warning: total_asset_array is empty")
+            return
+
+        T = total_asset.shape[0]
+        t = np.arange(T)
+        eps = 1e-12
+
+        # ---------- 计算：持仓市值 & 持仓占比 ----------
+        # 支持单标的：(T,) * (T,)
+        # 也支持多标的：(T, n_assets) * (T, n_assets) -> sum over assets
+        if shares.ndim == 1 and price.ndim == 1:
+            holding_value = shares * price
+        elif shares.ndim == 2 and price.ndim == 2:
+            holding_value = np.sum(shares * price, axis=1)
+        elif shares.ndim == 2 and price.ndim == 1:
+            holding_value = np.sum(shares * price[:, None], axis=1)
+        elif shares.ndim == 1 and price.ndim == 2:
+            holding_value = np.sum(shares[:, None] * price, axis=1)
+        else:
+            # 兜底：尽量拉平对齐
+            holding_value = np.asarray(shares, dtype=float).reshape(T, -1)
+            holding_value = np.sum(holding_value, axis=1)
+
+        holding_pct = np.where(np.abs(total_asset) > eps, holding_value / total_asset * 100.0, 0.0)
+
+        # 保存到 current_epoch_info，方便你在外面直接取
+        self.current_epoch_info["holding_value_array"] = holding_value
+        self.current_epoch_info["holding_pct_array"] = holding_pct
+
+        # ---------- 处理 action 形状（你这里通常是标量动作） ----------
+        act = np.squeeze(actions)
+        if act.ndim == 0:
+            act = np.full(T, float(act))
+        elif act.ndim == 1:
+            act = act[:T]
+        elif act.ndim == 2:
+            # (T,1) -> (T,)
+            if act.shape[1] == 1:
+                act = act[:, 0]
+            # (T, act_dim) -> 先默认画第0维（你如果是标量动作一般不会到这里）
+            else:
+                act = act[:, 0]
+        else:
+            act = act.reshape(T, -1)[:, 0]
+
+        # clip 以免数值越界导致图不好看
+        act = np.clip(act, -1.0, 1.0)
+
+        # ---------- 画图：3x2 ----------
+        fig, axes = plt.subplots(3, 2, figsize=figsize)
+
+        # 1) 总资产曲线
+        ax = axes[0, 0]
+        ax.plot(t, total_asset, "b-", linewidth=2, label="Total Asset")
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Total Asset")
+        ax.set_title(f"{self.name} - Total Asset Over Time")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        initial_value = float(total_asset[0])
+        final_value = float(total_asset[-1])
+        total_ret = (final_value / initial_value - 1.0) * 100.0 if abs(initial_value) > eps else 0.0
+        ax.text(
+            0.05, 0.95,
+            f"Initial: {initial_value:.2f}\nFinal: {final_value:.2f}\nReturn: {total_ret:.2f}%",
+            transform=ax.transAxes, va="top",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5)
+        )
+
+        # 2) 持仓占总资产百分比
+        ax = axes[0, 1]
+        ax.plot(t, holding_pct, "m-", linewidth=2, label="Holding / Total Asset (%)")
+        ax.axhline(0, color="k", linestyle="--", linewidth=1)
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Percent (%)")
+        ax.set_title(f"{self.name} - Holding Percentage")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        ax.text(
+            0.05, 0.95,
+            f"Mean: {np.mean(holding_pct):.2f}%\nMax: {np.max(holding_pct):.2f}%",
+            transform=ax.transAxes, va="top",
+            bbox=dict(boxstyle="round", facecolor="lavender", alpha=0.5)
+        )
+
+        # 3) 持仓股数（可叠加价格用双轴，下面给你默认只画股数）
+        ax = axes[1, 0]
+        if shares.ndim == 1:
+            ax.plot(t, shares, "g-", linewidth=2, label="Shares")
+        else:
+            # 多标的：每列一条
+            for j in range(shares.shape[1]):
+                ax.plot(t, shares[:, j], linewidth=1.6, label=f"Shares[{j}]")
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Shares")
+        ax.set_title(f"{self.name} - Portfolio Shares")
+        ax.grid(True, alpha=0.3)
+        ax.legend(ncol=2, fontsize=9)
+
+        # 4) Action plot（每一步买卖百分比，[-1,1]）
+        ax = axes[1, 1]
+        colors = np.where(act >= 0, "tab:green", "tab:red")
+        ax.bar(t, act, color=colors, alpha=0.7, width=1.0, label="Action (buy/sell %)")
+        ax.axhline(0, color="k", linestyle="--", linewidth=1)
+        ax.set_ylim(-1.05, 1.05)
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Action")
+        ax.set_title(f"{self.name} - Action Per Step")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # 5) 每步策略收益（百分比）
+        ax = axes[2, 0]
+        ax.plot(t, returns, "r-", linewidth=1.5, alpha=0.8, label="Strategy Return (%)")
+        ax.axhline(0, color="k", linestyle="--", linewidth=1)
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Return (%)")
+        ax.set_title(f"{self.name} - Strategy Return Time Series")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        mean_ret = float(np.mean(returns))
+        std_ret = float(np.std(returns))
+        sharpe = (mean_ret / std_ret) * np.sqrt(365*64) if std_ret > 1e-8 else 0.0
+        ax.text(
+            0.05, 0.95,
+            f"Mean: {mean_ret:.4f}%\nStd: {std_ret:.4f}%\nSharpe(ann): {sharpe:.2f}",
+            transform=ax.transAxes, va="top",
+            bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.5)
+        )
+
+        # 6) 回撤曲线（基于 total_asset）
+        ax = axes[2, 1]
+        peak = np.maximum.accumulate(total_asset)
+        drawdown = np.where(peak > eps, (peak - total_asset) / peak * 100.0, 0.0)
+        ax.fill_between(t, drawdown, 0, alpha=0.3, color="red", label="Drawdown (%)")
+        ax.plot(t, drawdown, "r-", linewidth=1.5)
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Drawdown (%)")
+        ax.set_title(f"{self.name} - Drawdown Curve")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        max_dd = float(np.max(drawdown)) if drawdown.size else 0.0
+        max_dd_idx = int(np.argmax(drawdown)) if drawdown.size else 0
+        ax.text(
+            0.05, 0.95,
+            f"Max Drawdown: {max_dd:.2f}%",
+            transform=ax.transAxes, va="top",
+            bbox=dict(boxstyle="round", facecolor="lightcoral", alpha=0.5)
+        )
+        if drawdown.size:
+            ax.plot(max_dd_idx, drawdown[max_dd_idx], "ro", markersize=8)
+
         plt.tight_layout()
-        
-        # 保存图片
+
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
             print(f"Current epoch plot saved to {save_path}")
         else:
             plt.show()
-        
+
         plt.close()
+
+        # 如你希望函数直接返回，也可以用这个返回值
+        return holding_pct

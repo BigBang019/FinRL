@@ -95,7 +95,7 @@ class BitcoinEnv(gym.Env):  # custom env
             "env_account": self.account,
             "env_day_price": self.day_price,
             "env_portfolio": self.stocks,
-            "env_forward_return": 0,
+            "env_strategy_return": 0,
         }
 
     def step(self, action):
@@ -147,7 +147,7 @@ class BitcoinEnv(gym.Env):  # custom env
             "env_account": self.account,
             "env_day_price": self.day_price,
             "env_portfolio": self.stocks,
-            "env_forward_return": (next_total_asset / prev_total_asset - 1) * 100,
+            "env_strategy_return": (next_total_asset / prev_total_asset - 1) * 100,
         }
 
     def draw_cumulative_return(self, args, _torch) -> list:
@@ -199,18 +199,18 @@ class BitcoinEnv(gym.Env):  # custom env
         self, data_cwd, time_frequency,
     ):
         if self.mode == "train":
-            df = pd.read_csv(f"{data_cwd}/train.csv", header=[0,1], index_col=0)
-            self.price_ary = df[('BTC/USDT', 'close')].to_numpy().reshape(-1, 1)
-            self.tech_ary = df[list(map(lambda x:('BTC/USDT', x), _INDICATORS))].to_numpy()
+            df = pd.read_csv(f"{data_cwd}/train_data.csv")
+            self.price_ary = df['close'].to_numpy().reshape(-1, 1)
+            self.tech_ary = df[_INDICATORS].to_numpy()
             n = self.price_ary.shape[0]
             x = n // int(time_frequency)
             ind = [int(time_frequency) * i for i in range(x)]
             self.price_ary = self.price_ary[ind]
             self.tech_ary = self.tech_ary[ind]
         else:
-            df = pd.read_csv(f"{data_cwd}/eval.csv", header=[0,1], index_col=0)
-            self.price_ary = df[('BTC/USDT', 'close')].to_numpy().reshape(-1, 1)
-            self.tech_ary = df[list(map(lambda x:('BTC/USDT', x), _INDICATORS))].to_numpy()
+            df = pd.read_csv(f"{data_cwd}/trade_data.csv")
+            self.price_ary = df['close'].to_numpy().reshape(-1, 1)
+            self.tech_ary = df[_INDICATORS].to_numpy()
             n = self.price_ary.shape[0]
             x = n // int(time_frequency)
             ind = [int(time_frequency) * i for i in range(x)]
