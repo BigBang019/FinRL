@@ -8,6 +8,7 @@ from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 
 
 from finrl.meta.env_cryptocurrency_trading.env_btc_ccxt import *
+from finrl.meta.env_cryptocurrency_trading.binance_usdm_env import *
 from finrl.agents.stablebaselines3.a2c_util import *
 
 
@@ -20,14 +21,17 @@ if __name__ == "__main__":
         time_frequency=1,
         mode="train"
     )
-    env_train, _ = env_train_gym.get_sb_env()
     env_eval_gym = BitcoinEnvDSR(
         data_cwd=".",
         time_frequency=1,
         mode="trade"
     )
+    # env_train_gym = USDMEnv(data_cwd=".", mode="train")
+    # env_eval_gym = USDMEnv(data_cwd=".", mode='trade')
+    env_train, _ = env_train_gym.get_sb_env()
     env_eval, _ = env_eval_gym.get_sb_env()
     env_train2 = deepcopy(env_train)
+
     
     # PPO关键参数
     n_steps = 2048  # 每次rollout收集的步数
@@ -53,7 +57,7 @@ if __name__ == "__main__":
         policy_kwargs=None,  # 可以自定义网络结构
         verbose=1,
         seed=None,
-        device="auto",  # 自动选择CPU或GPU
+        device="cuda",  # 自动选择CPU或GPU
     )
 
     tmp_path = RESULTS + f'/ppo-{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
